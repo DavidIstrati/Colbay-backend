@@ -19,6 +19,7 @@ class Users(Base):
     graduationYear= Column(String)
     institution= Column(String)
     verifiedEmail= Column(Boolean)
+    verificationCode = Column(Integer)
     date = Column(String)
 
     listings = relationship("Listings", back_populates="owner")
@@ -35,14 +36,16 @@ class Listings(Base):
     keywords = Column(String, nullable=False)
     standardizedTitle = Column(String, nullable=False)
     standardizedDescription = Column(String, nullable=False)
+    published = Column(Boolean, nullable=False)
     price = Column(String, nullable=False)
     image = Column(String)
+    images = Column(ARRAY(String))
     userId = Column(String, ForeignKey("users.userId"), index=True, nullable=False)
     date = Column(String)
     likesCount = Column(Integer)
 
     searchTsVector = Column(TSVector(), Computed(
-         """to_tsvector('english', "standardizedTitle" || ' ' || "standardizedDescription" || ' ' || "keywords" )""",
+         """to_tsvector('english', "standardizedTitle" || ' ' || "standardizedDescription" || ' ' || "keywords" || ' ' || "category")""",
          persisted=True))
 
     __table_args__ = (Index('indexSearchTsVector',

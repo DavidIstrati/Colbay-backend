@@ -1,11 +1,10 @@
-from unicodedata import category
-from config import getUUID, models, schemas
+from config import getUUID, models, s3, schemas, putItem
 from pydantic import BaseModel
 from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from cleaning import StringStandardizer
+from cleaning import StringStandardizer, ImgStandardizer, readImage
 
 class listingControllers():
     def __init__(self, db: Session):
@@ -21,47 +20,107 @@ class listingControllers():
         else:
             return 404, "No items found"
 
-    def getListings(self, userId: str):
-        items = self.db.query(models.Listings).filter(models.Listings.userId == userId).limit(20).all()
+    def getListings(self, page: int, userId: str):
+        items = self.db.query(models.Listings).filter(models.Listings.userId == userId).limit(page*20+1).offset((page-1)*20).all()
         if(items):
             return 200, items
         else:
             return 404, "No items found"
 
-    def postListing(self, listing: schemas.ListingCreate):
+    def updateListing(self, updates: schemas.ListingUpdate, userId: str):
+        parsedUpdates = {}
+        for k, v in updates.dict().items():
+            if (k != "listingId") and (v != None):
+                parsedUpdates[k] = v
+        item = self.db.query(models.Listings).filter(models.Listings.listingId == updates.listingId)
+        tempItem = item.first()
+        
+        if not (tempItem.userId == userId):
+            return 401, "Bad Authorization header."
+
+        item.update(parsedUpdates)
+        self.db.commit()
+        item = item.first()
+        if(item):
+            return 200, item
+        else:
+            return 404, "No items found"
+
+    async def updateMainImage(self, userId, listingId, image):
+        mainImagePath = f'/{userId}/{listingId}/{getUUID()}.webp'
+        pilImage = await readImage(image)
+        imgWebp = ImgStandardizer(pilImage).downsizeImage().convertImage("RGB").imageToFormat("webp")
+        resp, s3Item = putItem(mainImagePath, imgWebp)
+        if resp != 'success':
+            return 500, "Something went wrong"
+        mainImagePath = f'https://d36q0hjddph8od.cloudfront.net/{mainImagePath}'
+        item = self.db.query(models.Listings).filter(models.Listings.listingId == listingId)
+        listingItem = item.first()
+        if(not listingItem.published):
+            item.update({"image": mainImagePath, "published": True})
+        else:
+            item.update({"image": mainImagePath})
+        self.db.commit()
+        item = item.first()
+        if(item):
+            return 200, item
+        else:
+            return 404, "No items found"
+    
+    async def updateSecondaryImage(self, userId, listingId, image):
+        imagePath = f'/{userId}/{listingId}/{getUUID()}.webp'
+        pilImage = await readImage(image)
+        imgWebp = ImgStandardizer(pilImage).downsizeImage().convertImage("RGB").imageToFormat("webp")
+        resp, s3Item = putItem(imagePath, imgWebp)
+        if resp != 'success':
+            return 500, "Something went wrong"
+        imagePath = f'https://d36q0hjddph8od.cloudfront.net/{imagePath}'
+        item = self.db.query(models.Listings).filter(models.Listings.listingId == listingId)
+        listingItem = item.first()
+        itemImages = listingItem.images
+        if(itemImages):
+            newImages = itemImages
+            newImages.append(imagePath)
+        else:
+            newImages = [imagePath]
+        if((not listingItem.published) and listingItem.image):
+            item.update({"images": newImages, "published": True})
+        else:
+            item.update({"images": newImages})
+        self.db.commit()
+        item = item.first()
+        if(item):
+            return 200, item
+        else:
+            return 404, "No items found"
+
+
+    def postListing(self, body, userId):
         listingId = getUUID()
             
-        standardizedTitle = self.getStandardizedSearch(listing.title)
-        standardizedDescription = self.getStandardizedSearch(listing.description)
-        keywords_list = [self.getStandardizedSearch(value) for value in listing.keywords_list]
-        keywords = ", ".join(keywords_list)
-        
+        standardizedTitle = self.getStandardizedSearch(body.title)
+        standardizedDescription = self.getStandardizedSearch(body.description)
+        new_keywords_list = [self.getStandardizedSearch(value) for value in body.keywords.split(",")]
+        keywords = ", ".join(new_keywords_list)
+
         likes = 0
 
-        db_listing = models.Listings(userId=listing.userId, listingId=listingId, title=listing.title, category=listing.category, standardizedTitle=standardizedTitle, standardizedDescription=standardizedDescription, keywords=keywords, description=listing.description, price=listing.price, image=listing.image, keywords_list=listing.keywords_list, date=listing.date, likesCount=likes)
+        db_listing = models.Listings(userId=userId, listingId=listingId, title=body.title, category=body.category, standardizedTitle=standardizedTitle, standardizedDescription=standardizedDescription, keywords=keywords, description=body.description, price=body.price, images=[], keywords_list=new_keywords_list, published=False, date=None, likesCount=likes)
 
         self.db.add(db_listing)
         self.db.commit()
         self.db.refresh(db_listing)
         return 200, db_listing
 
-    def searchListings(self,  term: Optional[str], category: Optional[str], keywords: Optional[str], startDate: Optional[int], endDate: Optional[int], date: Optional[int], priceStart: Optional[int], priceEnd: Optional[int], likesMin: Optional[int]):
+    def searchListings(self,  term: Optional[str], category: Optional[str], priceStart: Optional[int] = None, priceEnd: Optional[int] = None, page: Optional[int] = 1):
+        QueryObject = self.db.query(models.Listings).filter(models.Listings.published == True)
         if(category):
-            if(term):
-                search = self.getStandardizedSearch(term)
-                items = self.db.query(models.Listings).filter(models.Listings.category == category).filter(models.Listings.searchTsVector.op('@@')(func.websearch_to_tsquery(search, postgresql_regconfig='english'))).limit(20).all()
-            else:
-                items = self.db.query(models.Listings).filter(models.Listings.category == category).limit(20).all()
-            if(items):
-                return 200, items
-            else:
-                return 400, "No items found"
-        elif(term):
+            QueryObject = QueryObject.filter(models.Listings.category == category)
+        if(term):
             search = self.getStandardizedSearch(term)
-            items = self.db.query(models.Listings).filter(models.Listings.searchTsVector.op('@@')(func.websearch_to_tsquery(search, postgresql_regconfig='english'))).limit(20).all()
-            if(items):
-                return 200, items
-            else:
-                return 400, "No items found"
+            QueryObject = QueryObject.filter(models.Listings.searchTsVector.op('@@')(func.websearch_to_tsquery(search, postgresql_regconfig='english')))
+        items = QueryObject.limit(page*20).offset((page-1)*20).all()
+        if(items):
+            return 200, items
         else:
-            return 500, ""
+            return 404, ""

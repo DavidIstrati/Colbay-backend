@@ -1,7 +1,12 @@
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from fastapi_jwt_auth import AuthJWT
+from fastapi_jwt_auth.exceptions import AuthJWTException
+
 
 from dotenv import load_dotenv
 
@@ -9,6 +14,8 @@ load_dotenv()
 
 from .dynamo import *
 from .dynamoParser import *
+from .s3 import *
+from .ses import *
 from .uuid import getUUID
 
 from sqlalchemy.orm import Session
@@ -19,6 +26,17 @@ import config.database_schemas as schemas
 app = FastAPI()
 
 models.Base.metadata.create_all(bind=engine)
+
+@AuthJWT.load_config
+def get_config():
+    return schemas.Settings()
+
+@app.exception_handler(AuthJWTException)
+def authjwt_exception_handler(request: Request, exc: AuthJWTException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.message}
+    )
 
 def get_db():
     db = SessionLocal()

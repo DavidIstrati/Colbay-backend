@@ -14,15 +14,18 @@ class likeControllers():
         else:
             return 404, "No items found"
 
-    def deleteLike(self, likeId: str):
-        item = self.db.query(models.Likes).filter(models.Likes.likeId == likeId).delete()
+    def deleteLike(self, likeId: str, userId: str):
+        item = self.db.query(models.Likes).filter(models.Likes.likeId == likeId)
+        tempItem = item.delete()
+        if not (tempItem.userId == userId):
+            return 401, "Bad Authorization header."
         self.db.commit()
         if(item):
             return 200, item
         else:
             return 404, "No items found"
 
-    def getLikes(self, userId: Optional[str], listingId: Optional[str]):
+    def getLikes(self, userId: Optional[str], listingId: Optional[str] = None):
         if(userId):
             items = self.db.query(models.Likes, models.Listings).filter(models.Likes.userId == userId).filter(models.Listings.listingId == models.Likes.listingId).limit(20).all()
         elif(listingId):
@@ -34,10 +37,10 @@ class likeControllers():
         else:
             return 404, "No items found"
 
-    def postLike(self, like: schemas.LikeCreate):
-        likeId = getUUID()
+    def postLike(self, like: schemas.LikeCreate, userId: str):
+        likeId = userId + like.listingId
 
-        db_like = models.Likes(userId=like.userId, listingId=like.listingId, likeId=likeId)
+        db_like = models.Likes(userId=userId, listingId=like.listingId, likeId=likeId)
         
         self.db.add(db_like)
         self.db.commit()
